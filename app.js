@@ -15,16 +15,34 @@ const DEFAULT_SYSTEM_PROMPT = `你是一位专业的 AI 图像生成提示词工
 充分考虑完整的对话历史。如果用户引用了之前的图片（例如"把背景改成蓝色"、"换个风格"、"再来一张但换成狗"），你应该基于上一轮的提示词进行修改，保持一致性。对话历史中包含了之前每一轮的增强提示词，你可以直接引用和修改。
 
 ### 3. 提示词增强
-将简单的请求转化为详细、有效的图像生成提示词。添加相关细节：
-- 主体描述（外观、姿态、表情、穿着等）
-- 艺术风格（写实照片、插画、油画、水彩、3D渲染等）
-- 构图（角度、取景、透视）
-- 光线（自然光、影棚光、戏剧性光线、柔和光线）
-- 色彩方案
-- 氛围与情绪
-- 细节程度
+将简单的请求转化为详细、有效的英文图像生成提示词。请从以下 7 个维度结构化描述：
 
-### 4. 参数选择
+1. **Goal（目标）**：图像的核心用途和类型（海报、产品图、插画、社交媒体配图等）
+2. **Scene（场景）**：背景、环境、地点、时间、天气、氛围
+3. **Subject（主体）**：人物/物体/动物的外观、姿态、表情、穿着、材质、颜色
+4. **Composition（构图）**：视角、角度、取景、透视、景深、主体位置与大小比例
+5. **Style（风格）**：艺术风格（写实照片、插画、油画、水彩、3D渲染、赛博朋克等）、色彩方案、光线（自然光、影棚光、戏剧性光线、柔和光线）
+6. **Text（文字）**：如需在图中生成文字，明确指定文字内容、字体风格、位置和排版
+7. **Constraints（约束）**：质量要求、负面提示词、特殊限制
+
+### 4. 字体选择指南
+当图像需要包含文字时，根据用途选择合适的字体风格描述：
+- **正式/商务**：Helvetica, Arial, sans-serif, clean geometric typeface
+- **优雅/高端**：Serif, Times New Roman, Didot, elegant serif font
+- **手写/亲切**：Handwritten, cursive script, brush calligraphy
+- **科技/未来**：Monospace, futuristic font, techno font, digital display font
+- **复古/怀旧**：Vintage typography, retro font, art deco lettering
+- **活泼/儿童**：Rounded sans-serif, playful font, bubble font
+- **中国风**：Chinese calligraphy, brush stroke font, traditional seal script
+- **标题/冲击力**：Bold condensed font, impact font, heavy weight sans-serif
+
+### 5. 文字处理规则
+- 将需要生成的文字内容用引号包裹，例如：text reading "SALE 50% OFF"
+- 对于容易混淆的字母，逐字母拼写：text spelling "L-A-N-C-Y"
+- 明确文字出现次数和位置，避免重复生成
+- 指定文字颜色与背景的对比关系
+
+### 6. 参数选择
 根据当前使用的图像生成 API 格式，选择合适的参数：
 
 #### 如果是 OpenAI 格式（gpt-image-1, dall-e-3 等）：
@@ -42,13 +60,16 @@ const DEFAULT_SYSTEM_PROMPT = `你是一位专业的 AI 图像生成提示词工
 - size: "1024x1024"、"1024x768"、"768x1024" 等
 - 当用户上传了参考图片或引用了之前的生成结果时，系统会自动走图生图模式（传入 image 数组），你需要在 prompt 中描述如何编辑/转换输入图片
 
-### 5. 图生图与多轮引用
+### 7. 图生图与多轮引用
 - 当用户上传了附件图片时，这是图生图请求。你的 prompt 应该描述如何基于输入图片进行编辑或转换，而不是从零生成
 - 当用户引用了之前的生成结果（如"把刚才那张图的背景换成蓝色"），系统也会自动走图生图模式，传入之前的图片作为参考
+- **你不直接分析参考图片**，图片由生图模型原生理解。你的职责是编写清晰的编辑指令
 - 图生图的 prompt 结构：[编辑指令] + [需要保留的元素] + [目标风格/场景] + [光线] + [构图] + [质量要求]
+- 图生图迭代格式：使用 "change only X" + "preserve exactly Y" 模式
+  - 示例："Change only the background to a sunset beach. Preserve exactly the person's face, outfit, and pose."
 - 多图合成时，描述不同输入图像之间的关系
 
-### 6. 多轮修正
+### 8. 多轮修正
 当用户提供反馈或修正意见时，调整提示词以解决他们的问题，同时保持他们满意的部分。例如用户说"太卡通了"，你应该将风格调整为更写实。
 
 ## 输出格式
@@ -63,7 +84,9 @@ const DEFAULT_SYSTEM_PROMPT = `你是一位专业的 AI 图像生成提示词工
     "size": "1024x1024",
     "quality": "standard",
     "style": "vivid"
-  }
+  },
+  "warnings": ["需要提醒用户注意的问题，如文字可能生成不准确等（可选，无则为空数组）"],
+  "suggestions": ["给用户的建议，如可以尝试的变体或改进方向（可选，无则为空数组）"]
 }
 
 ### grsai 格式时输出：
@@ -73,12 +96,26 @@ const DEFAULT_SYSTEM_PROMPT = `你是一位专业的 AI 图像生成提示词工
   "parameters": {
     "aspectRatio": "16:9",
     "quality": "auto"
-  }
+  },
+  "warnings": ["需要提醒用户注意的问题（可选，无则为空数组）"],
+  "suggestions": ["给用户的建议（可选，无则为空数组）"]
+}
+
+### agnes 格式时输出：
+{
+  "analysis": "简要分析用户的请求以及你如何处理它（用用户的语言回复）",
+  "prompt": "增强后的详细英文提示词，用于图像生成模型",
+  "parameters": {
+    "size": "1024x1024"
+  },
+  "warnings": ["需要提醒用户注意的问题（可选，无则为空数组）"],
+  "suggestions": ["给用户的建议（可选，无则为空数组）"]
 }
 
 ## 重要规则
 - prompt 字段必须使用英文，以获得最佳图像生成效果
 - analysis 字段使用与用户相同的语言
+- warnings 和 suggestions 字段使用与用户相同的语言
 - 如果用户的请求不明确，做出合理的假设并在 analysis 中说明
 - 对于迭代请求，明确修改之前的提示词而不是从零开始
 - analysis 要简洁但信息丰富
@@ -517,7 +554,7 @@ async function callChatModel(messages) {
         model: state.config.chatModel,
         messages: messages,
         temperature: state.config.chatTemperature,
-        response_format: { type: 'json_object' },
+        stream: false,
       }),
       signal: controller.signal,
     });
@@ -914,37 +951,40 @@ async function pollGrsaiResult(resultUrl, taskId, parentController, parentTimer)
  */
 function parseChatResponse(content) {
   // 尝试直接解析 JSON
+  let parsed;
   try {
-    return JSON.parse(content);
+    parsed = JSON.parse(content);
   } catch (e) {
     // 尝试从文本中提取 JSON
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
-        return JSON.parse(jsonMatch[0]);
+        parsed = JSON.parse(jsonMatch[0]);
       } catch (e2) {
-        // 仍然失败，返回原始文本作为 prompt
         return {
           analysis: '模型返回格式异常，使用原始文本作为提示词',
           prompt: content.trim(),
-          parameters: {
-            size: '1024x1024',
-            quality: 'standard',
-            style: 'vivid',
-          },
+          parameters: { size: '1024x1024', quality: 'standard', style: 'vivid' },
+          warnings: [],
+          suggestions: [],
         };
       }
+    } else {
+      return {
+        analysis: '模型返回格式异常，使用原始文本作为提示词',
+        prompt: content.trim(),
+        parameters: { size: '1024x1024', quality: 'standard', style: 'vivid' },
+        warnings: [],
+        suggestions: [],
+      };
     }
-    return {
-      analysis: '模型返回格式异常，使用原始文本作为提示词',
-      prompt: content.trim(),
-      parameters: {
-        size: '1024x1024',
-        quality: 'standard',
-        style: 'vivid',
-      },
-    };
   }
+
+  // 确保所有字段都有默认值
+  if (!parsed.warnings) parsed.warnings = [];
+  if (!parsed.suggestions) parsed.suggestions = [];
+  if (!parsed.parameters) parsed.parameters = {};
+  return parsed;
 }
 
 // ===== 聊天流程 =====
@@ -1017,10 +1057,12 @@ async function sendMessage(userText) {
 
     updateStep(stepsEl, 0, 'done', '提示词增强完成');
 
-    // 显示分析、增强提示词、参数
+    // 显示分析、增强提示词、参数、提醒、建议
     renderAnalysis(assistantEl, parsed.analysis);
     renderEnhancedPrompt(assistantEl, parsed.prompt);
     renderParamTags(assistantEl, parsed.parameters);
+    renderWarnings(assistantEl, parsed.warnings);
+    renderSuggestions(assistantEl, parsed.suggestions);
 
     // 步骤 2：调用图像生成模型
     currentStep = 1;
@@ -1221,6 +1263,36 @@ function renderParamTags(assistantEl, params) {
   if (tagsDiv.children.length > 0) {
     body.appendChild(tagsDiv);
   }
+}
+
+/**
+ * 渲染提醒框（warnings）
+ */
+function renderWarnings(assistantEl, warnings) {
+  if (!warnings || warnings.length === 0) return;
+  const body = assistantEl.querySelector('.assistant-body');
+  const div = document.createElement('div');
+  div.className = 'notice-card notice-warning';
+  div.innerHTML = `
+    <div class="notice-header"><span>⚠️</span><span>注意事项</span></div>
+    <ul class="notice-list">${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul>
+  `;
+  body.appendChild(div);
+}
+
+/**
+ * 渲染建议框（suggestions）
+ */
+function renderSuggestions(assistantEl, suggestions) {
+  if (!suggestions || suggestions.length === 0) return;
+  const body = assistantEl.querySelector('.assistant-body');
+  const div = document.createElement('div');
+  div.className = 'notice-card notice-suggestion';
+  div.innerHTML = `
+    <div class="notice-header"><span>💡</span><span>建议</span></div>
+    <ul class="notice-list">${suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>
+  `;
+  body.appendChild(div);
 }
 
 /**

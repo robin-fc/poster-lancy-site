@@ -739,6 +739,53 @@ body {
   font-weight: 500;
 }
 
+/* 提醒/建议卡片 */
+.notice-card {
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  border: 1px solid;
+}
+
+.notice-card .notice-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.notice-card .notice-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.notice-card .notice-list li {
+  margin-bottom: 2px;
+}
+
+.notice-warning {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.notice-warning .notice-header {
+  color: #b45309;
+}
+
+.notice-suggestion {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.notice-suggestion .notice-header {
+  color: #1d4ed8;
+}
+
 /* 图片结果 */
 .image-result {
   margin-bottom: 12px;
