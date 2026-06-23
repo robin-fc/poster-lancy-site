@@ -574,21 +574,23 @@ async function callImageModel(prompt, params, images) {
  */
 async function callAgnesImageModel(prompt, params, url, images) {
   const timeoutMs = state.config.imageTimeout * 1000;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const maxRetries = 3;
+  const retryDelayMs = 6000; // 文档建议 5 秒后重试，留 1 秒余量
 
   // 构建请求体
+  // 文档重要说明：
+  // - image 必须在顶层（不能放在 extra_body 中），否则会路由到 agnes-i2i-general-model
+  // - response_format 必须放在 extra_body 中（不能放在顶层），否则返回 400
   const body = {
     model: state.config.imageModel,
     prompt: prompt,
     size: params.size || '1024x1024',
   };
 
-  // 图生图：传入 image 数组（公网 URL 或 Data URI Base64）
   if (images && images.length > 0) {
+    // 图生图：image 在顶层，response_format 在 extra_body
+    body.image = images;
     body.extra_body = {
-      image: images,
       response_format: 'b64_json',
     };
   } else {
@@ -596,59 +598,78 @@ async function callAgnesImageModel(prompt, params, url, images) {
     body.return_base64 = true;
   }
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${state.config.imageApiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  let lastError = null;
 
-    clearTimeout(timer);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorMsg = `HTTP ${response.status}`;
-      try {
-        const errorJson = JSON.parse(errorText);
-        errorMsg = errorJson.error?.message || errorMsg;
-      } catch (e) {
-        errorMsg = errorText || errorMsg;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${state.config.imageApiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timer);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMsg = errorJson.error?.message || errorMsg;
+        } catch (e) {
+          errorMsg = errorText || errorMsg;
+        }
+
+        // 风控/冷却错误：自动重试
+        if (attempt < maxRetries && (errorMsg.includes('Try again') || errorMsg.includes('cooldown') || errorMsg.includes('No deployments available') || response.status === 503)) {
+          console.warn(`Agnes 生图第 ${attempt + 1} 次失败，${retryDelayMs / 1000} 秒后重试: ${errorMsg}`);
+          lastError = new Error(errorMsg);
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+          continue;
+        }
+        throw new Error(errorMsg);
       }
-      throw new Error(errorMsg);
-    }
 
-    const data = await response.json();
-    const imageData = data.data?.[0];
-    if (!imageData) {
-      throw new Error('图像模型返回空数据');
-    }
+      const data = await response.json();
+      const imageData = data.data?.[0];
+      if (!imageData) {
+        throw new Error('图像模型返回空数据');
+      }
 
-    if (imageData.b64_json) {
-      return {
-        base64: imageData.b64_json,
-        dataUrl: `data:image/png;base64,${imageData.b64_json}`,
-        revisedPrompt: imageData.revised_prompt || null,
-      };
-    } else if (imageData.url) {
-      return {
-        url: imageData.url,
-        dataUrl: imageData.url,
-        revisedPrompt: imageData.revised_prompt || null,
-      };
-    } else {
-      throw new Error('图像模型返回格式未知');
+      if (imageData.b64_json) {
+        return {
+          base64: imageData.b64_json,
+          dataUrl: `data:image/png;base64,${imageData.b64_json}`,
+          revisedPrompt: imageData.revised_prompt || null,
+        };
+      } else if (imageData.url) {
+        return {
+          url: imageData.url,
+          dataUrl: imageData.url,
+          revisedPrompt: imageData.revised_prompt || null,
+        };
+      } else {
+        throw new Error('图像模型返回格式未知');
+      }
+    } catch (error) {
+      clearTimeout(timer);
+      if (error.name === 'AbortError') {
+        throw new Error(`图像生成请求超时（${state.config.imageTimeout}秒）`);
+      }
+      // 非风控错误直接抛出
+      throw error;
     }
-  } catch (error) {
-    clearTimeout(timer);
-    if (error.name === 'AbortError') {
-      throw new Error(`图像生成请求超时（${state.config.imageTimeout}秒）`);
-    }
-    throw error;
   }
+
+  // 重试耗尽
+  throw lastError || new Error('Agnes 生图重试耗尽');
 }
 
 /**
