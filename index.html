@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 生图助手 - ChatGPT 风格生图流程</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 侧边栏遮罩 -->
+    <div id="sidebar-overlay"></div>
+
+    <!-- 侧边栏：配置面板 -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h2>⚙️ 参数配置</h2>
+        <button id="close-sidebar" title="关闭">✕</button>
+      </div>
+
+      <div class="sidebar-body">
+        <!-- 对话模型配置 -->
+        <div class="config-section">
+          <h3 class="config-title">💬 对话模型（提示词增强）</h3>
+          <p class="config-desc">用于理解用户意图、整合上下文、优化生图提示词</p>
+          <div class="config-field">
+            <label>
+              <input type="checkbox" id="direct-mode">
+              <span>直通模式（跳过对话模型，直接用输入生图）</span>
+            </label>
+            <p class="config-hint" id="direct-mode-hint">关闭时使用对话模型增强提示词；开启时直接发送原始输入到生图模型</p>
+          </div>
+          <div id="chat-model-config">
+            <div class="config-field">
+              <label for="chat-provider">服务商</label>
+              <select id="chat-provider"></select>
+            </div>
+            <div class="config-field" id="chat-custom-url-field" style="display:none">
+              <label for="chat-custom-url">自定义 URL（完整端点地址）</label>
+              <input type="text" id="chat-custom-url" placeholder="https://your-api.com/v1/chat/completions">
+            </div>
+            <div class="config-field">
+              <label for="chat-api-key">API Key</label>
+              <input type="password" id="chat-api-key" placeholder="sk-..." autocomplete="off">
+            </div>
+            <div class="config-field model-combo-field">
+            <label for="chat-model">模型</label>
+            <div class="model-combo">
+              <select id="chat-model"></select>
+              <input type="text" id="chat-model-custom" placeholder="或输入自定义模型" style="display:none">
+            </div>
+            <p class="config-hint" id="chat-model-hint">从列表选择，或点右侧输入框输入自定义名称</p>
+          </div>
+            <div class="config-field">
+              <label for="chat-timeout">超时（秒）</label>
+              <input type="number" id="chat-timeout" min="5" max="300" value="60">
+            </div>
+            <div class="config-field">
+              <label for="chat-temperature">Temperature</label>
+              <input type="range" id="chat-temperature" min="0" max="2" step="0.1" value="0.7">
+              <span id="chat-temperature-val" class="range-val">0.7</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 生图模型配置 -->
+        <div class="config-section">
+          <h3 class="config-title">🎨 生图模型</h3>
+          <p class="config-desc">实际生成图片的模型，支持 OpenAI 及第三方兼容 API</p>
+          <div class="config-field">
+            <label for="image-provider">服务商</label>
+            <select id="image-provider"></select>
+            <p class="config-hint" id="image-provider-hint"></p>
+          </div>
+          <div class="config-field" id="image-custom-url-field" style="display:none">
+            <label for="image-custom-url">自定义 URL（完整端点地址）</label>
+            <input type="text" id="image-custom-url" placeholder="https://your-api.com/v1/images/generations">
+          </div>
+          <div class="config-field" id="image-custom-format-field" style="display:none">
+            <label for="image-custom-format">API 格式</label>
+            <select id="image-custom-format">
+              <option value="openai">OpenAI 格式（/images/generations）</option>
+              <option value="grsai">grsai 格式（/v1/draw/completions）</option>
+            </select>
+          </div>
+          <div class="config-field">
+            <label for="image-api-key">API Key</label>
+            <input type="password" id="image-api-key" placeholder="sk-..." autocomplete="off">
+          </div>
+          <div class="config-field model-combo-field">
+            <label for="image-model">模型</label>
+            <div class="model-combo">
+              <select id="image-model"></select>
+              <input type="text" id="image-model-custom" placeholder="或输入自定义模型" style="display:none">
+            </div>
+            <p class="config-hint" id="image-model-hint">从列表选择，或点右侧输入框输入自定义名称</p>
+          </div>
+          <div class="config-field">
+            <label for="image-timeout">超时（秒）</label>
+            <input type="number" id="image-timeout" min="10" max="600" value="120">
+          </div>
+        </div>
+
+        <!-- 系统提示词 -->
+        <div class="config-section">
+          <h3 class="config-title">📝 系统提示词</h3>
+          <p class="config-desc">指导对话模型如何增强提示词，可自定义</p>
+          <div class="config-field">
+            <textarea id="system-prompt" rows="12" placeholder="输入系统提示词..."></textarea>
+          </div>
+          <div class="config-actions">
+            <button id="reset-prompt" class="btn-secondary">恢复默认</button>
+            <button id="save-config" class="btn-primary">保存配置</button>
+          </div>
+        </div>
+
+        <!-- 导出/导入 -->
+        <div class="config-section">
+          <h3 class="config-title">📦 数据管理</h3>
+          <div class="config-actions">
+            <button id="export-config" class="btn-secondary">导出配置</button>
+            <button id="export-chat" class="btn-secondary">导出对话</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主区域 -->
+    <div id="main">
+      <!-- 顶部栏 -->
+      <header id="header">
+        <div class="header-left">
+          <button id="toggle-sidebar" title="配置">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+          <h1>🎨 AI 生图助手</h1>
+        </div>
+        <div class="header-right">
+          <span id="status-indicator" class="status-dot" title="未配置"></span>
+          <button id="clear-chat" class="btn-ghost" title="清空对话">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>清空</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 消息列表 -->
+      <div id="messages">
+        <div id="welcome-screen" class="welcome-screen">
+          <div class="welcome-icon">🎨</div>
+          <h2>AI 生图助手</h2>
+          <p>模拟 ChatGPT 生图流程：提示词理解 → 上下文整合 → 多轮修正 → 参数选择 → 图片生成</p>
+          <div class="welcome-features">
+            <div class="feature-card" data-prompt="画一只在月光下漫步的猫，赛博朋克风格">
+              <div class="feature-icon">🐱</div>
+              <div class="feature-text">动物插画</div>
+              <div class="feature-hint">画一只在月光下漫步的猫</div>
+            </div>
+            <div class="feature-card" data-prompt="一个未来城市的天际线，日落时分，赛博朋克风格">
+              <div class="feature-icon">🌆</div>
+              <div class="feature-text">风景场景</div>
+              <div class="feature-hint">未来城市天际线</div>
+            </div>
+            <div class="feature-card" data-prompt="设计一个极简风格的咖啡品牌 logo">
+              <div class="feature-icon">☕</div>
+              <div class="feature-text">品牌设计</div>
+              <div class="feature-hint">咖啡品牌 logo</div>
+            </div>
+            <div class="feature-card" data-prompt="一幅油画风格的山水风景，有云雾缭绕的山峰">
+              <div class="feature-icon">🏔️</div>
+              <div class="feature-text">艺术创作</div>
+              <div class="feature-hint">油画山水风景</div>
+            </div>
+          </div>
+          <div class="welcome-tip">
+            💡 点击左侧 <strong>☰</strong> 按钮配置 API 参数后即可开始使用
+          </div>
+        </div>
+      </div>
+
+      <!-- 输入区 -->
+      <div id="input-area">
+        <div class="input-wrapper">
+          <textarea id="user-input" placeholder="描述你想要生成的图片，支持多轮对话迭代修改..." rows="1"></textarea>
+          <button id="send-btn" title="发送" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+        <div class="input-hint">
+          <span>Enter 发送 · Shift+Enter 换行</span>
+          <span id="context-info"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片预览弹窗 -->
+  <div id="image-modal" class="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="document.getElementById('image-modal').classList.remove('active')">✕</button>
+      <img id="modal-image" src="" alt="预览">
+      <div class="modal-info">
+        <p id="modal-prompt"></p>
+        <button id="modal-download" class="btn-primary">下载图片</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
