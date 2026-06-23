@@ -1480,7 +1480,7 @@ async function retryImageGeneration(retryCtx, errorDiv) {
 }
 
 /**
- * 重新对话：从最近一次用户消息重新开始整个流程
+ * 重新对话：如果提示词已增强完成，直接复用提示词重试生图；否则从头开始
  */
 async function retryFullConversation(retryCtx, errorDiv) {
   const { assistantEl, stepsEl } = retryCtx;
@@ -1490,6 +1490,13 @@ async function retryFullConversation(retryCtx, errorDiv) {
     return;
   }
 
+  // 如果提示词增强已完成（生图阶段失败），直接复用提示词重试生图
+  if (retryCtx.failedAtImageGen && retryCtx.retryData) {
+    retryImageGeneration(retryCtx, errorDiv);
+    return;
+  }
+
+  // 对话模型失败：需要从头重新开始
   // 找到最近一条用户消息
   const lastUserMsg = state.chatHistory.filter(m => m.role === 'user').pop();
   if (!lastUserMsg) {
