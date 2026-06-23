@@ -81,6 +81,7 @@
             <select id="image-custom-format">
               <option value="openai">OpenAI 格式（/images/generations）</option>
               <option value="grsai">grsai 格式（/v1/draw/completions）</option>
+              <option value="agnes">Agnes 格式（/images/generations，支持图生图）</option>
             </select>
           </div>
           <div class="config-field">
@@ -187,7 +188,15 @@
 
       <!-- 输入区 -->
       <div id="input-area">
+        <!-- 附件预览区 -->
+        <div id="attachment-preview" class="attachment-preview" style="display:none;"></div>
         <div class="input-wrapper">
+          <button id="attach-btn" class="attach-btn" title="添加图片（图生图）">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <input type="file" id="file-input" accept="image/*" multiple style="display:none;">
           <textarea id="user-input" placeholder="描述你想要生成的图片，支持多轮对话迭代修改..." rows="1"></textarea>
           <button id="send-btn" title="发送" disabled>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -197,7 +206,7 @@
           </button>
         </div>
         <div class="input-hint">
-          <span>Enter 发送 · Shift+Enter 换行</span>
+          <span>Enter 发送 · Shift+Enter 换行 · 📎可添加图片走图生图</span>
           <span id="context-info"></span>
         </div>
       </div>

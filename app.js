@@ -38,7 +38,17 @@ const DEFAULT_SYSTEM_PROMPT = `你是一位专业的 AI 图像生成提示词工
   - 像素值: "1024x1024" 等
 - quality: 可选 "auto", "low", "medium", "high"
 
-### 5. 多轮修正
+#### 如果是 agnes 格式（agnes-image-2.0-flash 等）：
+- size: "1024x1024"、"1024x768"、"768x1024" 等
+- 当用户上传了参考图片或引用了之前的生成结果时，系统会自动走图生图模式（传入 image 数组），你需要在 prompt 中描述如何编辑/转换输入图片
+
+### 5. 图生图与多轮引用
+- 当用户上传了附件图片时，这是图生图请求。你的 prompt 应该描述如何基于输入图片进行编辑或转换，而不是从零生成
+- 当用户引用了之前的生成结果（如"把刚才那张图的背景换成蓝色"），系统也会自动走图生图模式，传入之前的图片作为参考
+- 图生图的 prompt 结构：[编辑指令] + [需要保留的元素] + [目标风格/场景] + [光线] + [构图] + [质量要求]
+- 多图合成时，描述不同输入图像之间的关系
+
+### 6. 多轮修正
 当用户提供反馈或修正意见时，调整提示词以解决他们的问题，同时保持他们满意的部分。例如用户说"太卡通了"，你应该将风格调整为更写实。
 
 ## 输出格式
@@ -122,7 +132,7 @@ const PROVIDERS = {
     },
     image: {
       url: 'https://apihub.agnes-ai.com/v1/images/generations',
-      format: 'openai',
+      format: 'agnes',
       models: ['agnes-image-2.0-flash', 'agnes-image-2.1-flash'],
     },
   },
@@ -161,6 +171,7 @@ const state = {
   chatHistory: [],    // 发送给对话模型的历史 {role, content}
   isProcessing: false,
   currentImage: null, // 当前预览的图片
+  pendingAttachments: [], // 待发送的附件 {dataUrl, name, isRef}
 };
 
 // ===== DOM 引用 =====
@@ -210,6 +221,10 @@ const els = {
   // 其他
   contextInfo: $('context-info'),
   toastContainer: $('toast-container'),
+  // 附件
+  attachBtn: $('attach-btn'),
+  fileInput: $('file-input'),
+  attachmentPreview: $('attachment-preview'),
 };
 
 // ===== 配置管理 =====
@@ -334,7 +349,9 @@ function applyImageProvider() {
   } else {
     const fmt = provider.image.format;
     if (fmt === 'grsai') {
-      els.imageProviderHint.textContent = `${provider.name}：POST ${provider.image.url}，参数 aspectRatio, quality`;
+      els.imageProviderHint.textContent = `${provider.name}：POST ${provider.image.url}，参数 aspectRatio, quality，支持图生图（urls）`;
+    } else if (fmt === 'agnes') {
+      els.imageProviderHint.textContent = `${provider.name}：POST ${provider.image.url}，参数 size，支持图生图（extra_body.image 数组）`;
     } else {
       els.imageProviderHint.textContent = `${provider.name}：POST ${provider.image.url}，参数 size, quality, style`;
     }
@@ -538,13 +555,100 @@ async function callChatModel(messages) {
 /**
  * 调用图像生成模型 - 根据 API 格式分发
  */
-async function callImageModel(prompt, params) {
+async function callImageModel(prompt, params, images) {
   const imgConfig = getImageConfig();
   if (imgConfig.format === 'grsai') {
-    return callGrsaiImageModel(prompt, params, imgConfig.url);
+    return callGrsaiImageModel(prompt, params, imgConfig.url, images);
   }
-  // openai 和 agnes 都使用 OpenAI 兼容格式
+  if (imgConfig.format === 'agnes') {
+    return callAgnesImageModel(prompt, params, imgConfig.url, images);
+  }
+  // openai 格式
   return callOpenAIImageModel(prompt, params, imgConfig.url);
+}
+
+/**
+ * Agnes 格式图像生成（/v1/images/generations）
+ * 支持文生图和图生图（通过 image 数组传入参考图片）
+ * 文档：https://agnes-ai.com/doc/agnes-image-20-flash
+ */
+async function callAgnesImageModel(prompt, params, url, images) {
+  const timeoutMs = state.config.imageTimeout * 1000;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  // 构建请求体
+  const body = {
+    model: state.config.imageModel,
+    prompt: prompt,
+    size: params.size || '1024x1024',
+  };
+
+  // 图生图：传入 image 数组（公网 URL 或 Data URI Base64）
+  if (images && images.length > 0) {
+    body.extra_body = {
+      image: images,
+      response_format: 'b64_json',
+    };
+  } else {
+    // 文生图：使用 return_base64 获取 Base64
+    body.return_base64 = true;
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.config.imageApiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMsg = `HTTP ${response.status}`;
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMsg = errorJson.error?.message || errorMsg;
+      } catch (e) {
+        errorMsg = errorText || errorMsg;
+      }
+      throw new Error(errorMsg);
+    }
+
+    const data = await response.json();
+    const imageData = data.data?.[0];
+    if (!imageData) {
+      throw new Error('图像模型返回空数据');
+    }
+
+    if (imageData.b64_json) {
+      return {
+        base64: imageData.b64_json,
+        dataUrl: `data:image/png;base64,${imageData.b64_json}`,
+        revisedPrompt: imageData.revised_prompt || null,
+      };
+    } else if (imageData.url) {
+      return {
+        url: imageData.url,
+        dataUrl: imageData.url,
+        revisedPrompt: imageData.revised_prompt || null,
+      };
+    } else {
+      throw new Error('图像模型返回格式未知');
+    }
+  } catch (error) {
+    clearTimeout(timer);
+    if (error.name === 'AbortError') {
+      throw new Error(`图像生成请求超时（${state.config.imageTimeout}秒）`);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -637,7 +741,7 @@ async function callOpenAIImageModel(prompt, params, url) {
  * grsai 格式图像生成（POST /v1/draw/completions）
  * 使用 webHook: -1 获取任务 ID，然后轮询 POST /v1/draw/result
  */
-async function callGrsaiImageModel(prompt, params, generateUrl) {
+async function callGrsaiImageModel(prompt, params, generateUrl, images) {
   // 轮询接口：把 /completions 替换为 /result
   const resultUrl = generateUrl.replace('/completions', '/result');
   const timeoutMs = state.config.imageTimeout * 1000;
@@ -649,7 +753,7 @@ async function callGrsaiImageModel(prompt, params, generateUrl) {
   const body = {
     model: state.config.imageModel,
     prompt: prompt,
-    urls: [],
+    urls: images || [],
     shutProgress: true,
     webHook: '-1',
   };
@@ -830,17 +934,31 @@ function parseChatResponse(content) {
 async function sendMessage(userText) {
   if (state.isProcessing || !userText.trim()) return;
 
+  // 收集当前附件（发送时快照）
+  const attachments = [...state.pendingAttachments];
+  const hasImages = attachments.length > 0;
+
   // 隐藏欢迎屏
   const welcome = $('welcome-screen');
   if (welcome) welcome.style.display = 'none';
 
-  // 添加用户消息到 UI
-  const userMsgEl = addMessageToUI('user', userText);
-  state.messages.push({ role: 'user', content: userText, type: 'text' });
-  state.chatHistory.push({ role: 'user', content: userText });
+  // 添加用户消息到 UI（含附件预览）
+  const userMsgEl = addMessageToUI('user', userText, attachments);
 
-  // 清空输入
+  // 构建发送给对话模型的用户内容（包含图片说明）
+  let chatContent = userText;
+  if (hasImages) {
+    const imgDescs = attachments.map((a, i) => `[参考图片${i + 1}]`).join('、');
+    chatContent = `${userText}\n\n[本次请求包含${imgDescs}，请走图生图模式，prompt 描述如何编辑/转换输入图片]`;
+  }
+
+  state.messages.push({ role: 'user', content: userText, type: 'text', attachments });
+  state.chatHistory.push({ role: 'user', content: chatContent });
+
+  // 清空输入和附件
   els.userInput.value = '';
+  state.pendingAttachments = [];
+  renderAttachmentPreview();
   autoResizeTextarea();
   updateContextInfo();
 
@@ -860,9 +978,14 @@ async function sendMessage(userText) {
     updateStep(stepsEl, 0, 'active', '正在理解您的需求并增强提示词...');
 
     const imgCfg = getImageConfig();
+    const formatDesc = imgCfg.format === 'grsai'
+      ? 'grsai（使用 aspectRatio 参数，如 1:1, 16:9, 9:16, 1024x1024 等；支持 quality: auto/low/medium/high；图生图通过 urls 传入图片）'
+      : imgCfg.format === 'agnes'
+        ? 'agnes（使用 size 参数，如 1024x1024、1024x768、768x1024；图生图通过 extra_body.image 数组传入图片；response_format 必须放在 extra_body 中）'
+        : 'OpenAI 兼容格式（使用 size, quality, style 参数）';
     const chatMessages = [
       { role: 'system', content: state.config.systemPrompt },
-      { role: 'system', content: `当前图像生成 API 格式为: ${imgCfg.format === 'grsai' ? 'grsai（使用 aspectRatio 参数，如 1:1, 16:9, 9:16, 1024x1024 等；支持 quality: auto/low/medium/high）' : 'OpenAI 兼容格式（使用 size, quality, style 参数）'}。请使用对应格式的参数。` },
+      { role: 'system', content: `当前图像生成 API 格式为: ${formatDesc}。请使用对应格式的参数。${hasImages ? '本次用户上传了参考图片，是图生图请求。' : ''}` },
       ...state.chatHistory,
     ];
 
@@ -878,9 +1001,16 @@ async function sendMessage(userText) {
 
     // 步骤 2：调用图像生成模型
     currentStep = 1;
-    updateStep(stepsEl, 1, 'active', `正在生成图片（${parsed.parameters?.size || '1024x1024'}）...`);
+    const modeLabel = hasImages ? '图生图' : '文生图';
+    updateStep(stepsEl, 1, 'active', `正在${modeLabel}生成图片（${parsed.parameters?.size || parsed.parameters?.aspectRatio || '1024x1024'}）...`);
 
-    const imageResult = await callImageModel(parsed.prompt, parsed.parameters || {});
+    // 准备图片输入数据（Data URI Base64 或 URL）
+    let imageInputs = [];
+    if (hasImages) {
+      imageInputs = attachments.map(a => a.dataUrl);
+    }
+
+    const imageResult = await callImageModel(parsed.prompt, parsed.parameters || {}, imageInputs);
 
     updateStep(stepsEl, 1, 'done', '图片生成完成');
 
@@ -893,6 +1023,7 @@ async function sendMessage(userText) {
       prompt: parsed.prompt,
       parameters: parsed.parameters,
       imageGenerated: true,
+      mode: hasImages ? 'img2img' : 'txt2img',
     });
     state.messages.push({
       role: 'assistant',
@@ -1105,6 +1236,18 @@ function renderImage(assistantEl, imageResult, prompt) {
   imgContainer.appendChild(img);
   imgContainer.appendChild(overlay);
   wrapper.appendChild(imgContainer);
+
+  // 引用此图片按钮（用于下一轮图生图）
+  const refBtn = document.createElement('button');
+  refBtn.className = 'image-ref-btn';
+  refBtn.innerHTML = '📎 引用此图片';
+  refBtn.addEventListener('click', () => {
+    addAttachment(imageResult.dataUrl, '引用图片', true);
+    els.userInput.focus();
+    showToast('已添加引用图片，输入修改需求后发送即可图生图', 'success', 3000);
+  });
+  wrapper.appendChild(refBtn);
+
   body.appendChild(wrapper);
 
   scrollToBottom();
@@ -1124,7 +1267,7 @@ function renderError(assistantEl, errorMsg) {
 /**
  * 添加消息到 UI
  */
-function addMessageToUI(role, content) {
+function addMessageToUI(role, content, attachments) {
   const welcome = $('welcome-screen');
   if (welcome) welcome.style.display = 'none';
 
@@ -1141,6 +1284,21 @@ function addMessageToUI(role, content) {
     </div>
     <div class="message-content">${escapeHtml(content)}</div>
   `;
+
+  // 如果有附件，添加缩略图预览
+  if (attachments && attachments.length > 0) {
+    const thumbRow = document.createElement('div');
+    thumbRow.className = 'attachment-preview';
+    thumbRow.style.margin = '8px 0 0';
+    attachments.forEach(att => {
+      const thumb = document.createElement('div');
+      thumb.className = 'attachment-thumb' + (att.isRef ? ' ref-thumb' : '');
+      thumb.innerHTML = `<img src="${att.dataUrl}" alt="${escapeHtml(att.name)}">`;
+      thumbRow.appendChild(thumb);
+    });
+    div.querySelector('.message-content').appendChild(thumbRow);
+  }
+
   els.messages.appendChild(div);
   scrollToBottom();
   return div;
@@ -1210,6 +1368,82 @@ function openImageModal(imageResult, prompt) {
 function closeImageModal() {
   els.imageModal.classList.remove('active');
   state.currentImage = null;
+}
+
+// ===== 附件管理 =====
+
+/**
+ * 添加附件（图片）
+ * @param {string} dataUrl - 图片的 Data URL
+ * @param {string} name - 附件名称
+ * @param {boolean} isRef - 是否是引用的生成结果
+ */
+function addAttachment(dataUrl, name, isRef = false) {
+  state.pendingAttachments.push({ dataUrl, name, isRef });
+  renderAttachmentPreview();
+}
+
+/**
+ * 移除附件
+ */
+function removeAttachment(index) {
+  state.pendingAttachments.splice(index, 1);
+  renderAttachmentPreview();
+}
+
+/**
+ * 渲染附件预览区
+ */
+function renderAttachmentPreview() {
+  const container = els.attachmentPreview;
+  container.innerHTML = '';
+
+  if (state.pendingAttachments.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'flex';
+  state.pendingAttachments.forEach((att, index) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'attachment-thumb' + (att.isRef ? ' ref-thumb' : '');
+    thumb.innerHTML = `
+      <img src="${att.dataUrl}" alt="${escapeHtml(att.name)}">
+      <button class="remove-btn" data-index="${index}">✕</button>
+    `;
+    thumb.querySelector('.remove-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeAttachment(index);
+    });
+    container.appendChild(thumb);
+  });
+}
+
+/**
+ * 处理文件选择
+ */
+function handleFileSelect(files) {
+  const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+  if (imageFiles.length === 0) {
+    showToast('请选择图片文件', 'warning', 2000);
+    return;
+  }
+
+  let loaded = 0;
+  imageFiles.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      addAttachment(e.target.result, file.name, false);
+      loaded++;
+      if (loaded === imageFiles.length) {
+        showToast(`已添加 ${imageFiles.length} 张图片`, 'success', 2000);
+      }
+    };
+    reader.onerror = () => {
+      showToast(`加载图片失败: ${file.name}`, 'error', 2000);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // ===== 事件绑定 =====
@@ -1372,6 +1606,56 @@ function bindEvents() {
       if (!els.sendBtn.disabled) {
         sendMessage(els.userInput.value);
       }
+    }
+  });
+
+  // 附件按钮 - 点击触发文件选择
+  els.attachBtn.addEventListener('click', () => {
+    els.fileInput.click();
+  });
+
+  // 文件选择
+  els.fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleFileSelect(e.target.files);
+    }
+    e.target.value = ''; // 重置以便重复选择同一文件
+  });
+
+  // 粘贴图片
+  els.userInput.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'));
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    imageItems.forEach(item => {
+      const file = item.getAsFile();
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          addAttachment(ev.target.result, `粘贴图片-${Date.now()}.png`, false);
+          showToast('已添加粘贴的图片', 'success', 2000);
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+  });
+
+  // 拖拽图片到输入区
+  const inputArea = document.getElementById('input-area');
+  inputArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    inputArea.style.background = 'var(--accent-light)';
+  });
+  inputArea.addEventListener('dragleave', () => {
+    inputArea.style.background = '';
+  });
+  inputArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    inputArea.style.background = '';
+    if (e.dataTransfer.files.length > 0) {
+      handleFileSelect(e.dataTransfer.files);
     }
   });
 
