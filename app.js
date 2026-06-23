@@ -971,6 +971,8 @@ async function sendMessage(userText) {
   const assistantEl = createAssistantMessage();
   const stepsEl = assistantEl.querySelector('.processing-steps');
   let currentStep = 0;
+  let parsed = undefined;
+  let imageInputs = [];
 
   try {
     // 步骤 1：调用对话模型增强提示词
@@ -1005,7 +1007,6 @@ async function sendMessage(userText) {
     updateStep(stepsEl, 1, 'active', `正在${modeLabel}生成图片（${parsed.parameters?.size || parsed.parameters?.aspectRatio || '1024x1024'}）...`);
 
     // 准备图片输入数据（Data URI Base64 或 URL）
-    let imageInputs = [];
     if (hasImages) {
       imageInputs = attachments.map(a => a.dataUrl);
     }
@@ -1041,7 +1042,15 @@ async function sendMessage(userText) {
   } catch (error) {
     console.error('处理失败:', error);
     updateStep(stepsEl, currentStep, 'error', error.message);
-    renderError(assistantEl, error.message);
+
+    // 判断失败阶段：currentStep === 0 表示对话模型失败（需重新对话），1 表示生图失败（可仅重试生图）
+    const failedAtImageGen = currentStep === 1 && parsed !== undefined;
+    renderError(assistantEl, error.message, {
+      failedAtImageGen,
+      retryData: failedAtImageGen ? { parsed, imageInputs, hasImages } : null,
+      assistantEl,
+      stepsEl,
+    });
 
     // 仍然保存到历史以便上下文连续
     state.chatHistory.push({
@@ -1256,12 +1265,179 @@ function renderImage(assistantEl, imageResult, prompt) {
 /**
  * 渲染错误消息
  */
-function renderError(assistantEl, errorMsg) {
+function renderError(assistantEl, errorMsg, retryCtx) {
   const body = assistantEl.querySelector('.assistant-body');
   const errorDiv = document.createElement('div');
   errorDiv.className = 'error-message';
-  errorDiv.innerHTML = `<strong>❌ 处理失败</strong>${escapeHtml(errorMsg)}`;
+
+  let retryHtml = '';
+  if (retryCtx && retryCtx.failedAtImageGen && retryCtx.retryData) {
+    // 生图失败：提供"重试生图"和"重新对话"两个选项
+    retryHtml = `
+      <div class="error-actions">
+        <button class="retry-btn retry-image-btn">🔄 重试生图</button>
+        <button class="retry-btn retry-chat-btn">💬 重新对话</button>
+      </div>
+    `;
+  } else {
+    // 对话模型失败或早期失败：提供"重新对话"
+    retryHtml = `
+      <div class="error-actions">
+        <button class="retry-btn retry-chat-btn">🔄 重新对话</button>
+      </div>
+    `;
+  }
+
+  errorDiv.innerHTML = `<strong>❌ 处理失败</strong>${escapeHtml(errorMsg)}${retryHtml}`;
   body.appendChild(errorDiv);
+
+  // 绑定重试按钮事件
+  if (retryCtx) {
+    const retryImageBtn = errorDiv.querySelector('.retry-image-btn');
+    const retryChatBtn = errorDiv.querySelector('.retry-chat-btn');
+
+    if (retryImageBtn && retryCtx.retryData) {
+      retryImageBtn.addEventListener('click', () => {
+        retryImageGeneration(retryCtx, errorDiv);
+      });
+    }
+
+    if (retryChatBtn) {
+      retryChatBtn.addEventListener('click', () => {
+        retryFullConversation(retryCtx, errorDiv);
+      });
+    }
+  }
+}
+
+/**
+ * 仅重试图片生成（复用已增强的提示词，跳过对话模型）
+ */
+async function retryImageGeneration(retryCtx, errorDiv) {
+  const { retryData, assistantEl, stepsEl } = retryCtx;
+  const { parsed, imageInputs, hasImages } = retryData;
+
+  if (state.isProcessing) {
+    showToast('正在处理中，请稍候', 'warning', 2000);
+    return;
+  }
+
+  // 移除错误提示
+  errorDiv.remove();
+
+  // 恢复处理状态
+  state.isProcessing = true;
+  updateStatusIndicator();
+  els.sendBtn.classList.add('loading');
+
+  // 重置步骤 1 为 active
+  const modeLabel = hasImages ? '图生图' : '文生图';
+  updateStep(stepsEl, 1, 'active', `正在重试${modeLabel}生成图片（${parsed.parameters?.size || parsed.parameters?.aspectRatio || '1024x1024'}）...`);
+
+  try {
+    const imageResult = await callImageModel(parsed.prompt, parsed.parameters || {}, imageInputs);
+
+    updateStep(stepsEl, 1, 'done', '图片生成完成');
+
+    // 显示图片
+    renderImage(assistantEl, imageResult, parsed.prompt);
+
+    // 保存到历史
+    const assistantContent = JSON.stringify({
+      analysis: parsed.analysis,
+      prompt: parsed.prompt,
+      parameters: parsed.parameters,
+      imageGenerated: true,
+      mode: hasImages ? 'img2img' : 'txt2img',
+    });
+    state.messages.push({
+      role: 'assistant',
+      content: assistantContent,
+      type: 'image',
+      data: { ...parsed, image: imageResult },
+    });
+    state.chatHistory.push({ role: 'assistant', content: assistantContent });
+
+    // 隐藏处理步骤
+    setTimeout(() => {
+      stepsEl.style.display = 'none';
+    }, 1000);
+
+  } catch (error) {
+    console.error('重试生图失败:', error);
+    updateStep(stepsEl, 1, 'error', error.message);
+    renderError(assistantEl, error.message, {
+      failedAtImageGen: true,
+      retryData: { parsed, imageInputs, hasImages },
+      assistantEl,
+      stepsEl,
+    });
+
+    state.chatHistory.push({
+      role: 'assistant',
+      content: JSON.stringify({ error: error.message }),
+    });
+  } finally {
+    state.isProcessing = false;
+    updateStatusIndicator();
+    els.sendBtn.classList.remove('loading');
+    updateContextInfo();
+    scrollToBottom();
+  }
+}
+
+/**
+ * 重新对话：从最近一次用户消息重新开始整个流程
+ */
+async function retryFullConversation(retryCtx, errorDiv) {
+  const { assistantEl, stepsEl } = retryCtx;
+
+  if (state.isProcessing) {
+    showToast('正在处理中，请稍候', 'warning', 2000);
+    return;
+  }
+
+  // 找到最近一条用户消息
+  const lastUserMsg = state.chatHistory.filter(m => m.role === 'user').pop();
+  if (!lastUserMsg) {
+    showToast('未找到可重试的对话', 'warning', 2000);
+    return;
+  }
+
+  // 从 chatHistory 中移除最后一条用户消息和失败的助手消息
+  // 安全移除：如果最后一条是 assistant error，先移除它
+  if (state.chatHistory.length > 0 && state.chatHistory[state.chatHistory.length - 1].role === 'assistant') {
+    state.chatHistory.pop();
+  }
+  // 移除最后的 user 消息
+  if (state.chatHistory.length > 0 && state.chatHistory[state.chatHistory.length - 1].role === 'user') {
+    state.chatHistory.pop();
+  }
+
+  // 从 state.messages 中也移除（安全移除）
+  if (state.messages.length > 0 && state.messages[state.messages.length - 1].role === 'assistant') {
+    state.messages.pop();
+  }
+  if (state.messages.length > 0 && state.messages[state.messages.length - 1].role === 'user') {
+    state.messages.pop();
+  }
+
+  // 移除 UI 中的当前助手消息和上一条用户消息
+  assistantEl.remove();
+  const allMessages = els.messages.querySelectorAll('.message.user');
+  if (allMessages.length > 0) {
+    allMessages[allMessages.length - 1].remove();
+  }
+
+  // 从 chatHistory 提取原始用户文本（去掉图片说明后缀）
+  let userText = lastUserMsg.content;
+  const imgSuffixMatch = userText.match(/\n\n\[本次请求包含.*\]$/);
+  if (imgSuffixMatch) {
+    userText = userText.replace(imgSuffixMatch[0], '');
+  }
+
+  // 重新发送（附件的 dataUrl 已丢失，仅重试文本部分）
+  sendMessage(userText);
 }
 
 /**

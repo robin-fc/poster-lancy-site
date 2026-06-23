@@ -818,6 +818,43 @@ body {
   margin-bottom: 4px;
 }
 
+.error-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.retry-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.retry-btn:hover {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.retry-image-btn {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.retry-image-btn:hover {
+  opacity: 0.9;
+}
+
 /* ===== 输入区 ===== */
 #input-area {
   padding: 12px 24px 16px;
